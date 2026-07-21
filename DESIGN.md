@@ -173,11 +173,11 @@ Metric rules:
 - Histograms are preferred over client-side summaries so percentiles can be aggregated across replicas.
 - Known bounded series are initialized where practical so "zero" is not confused with "missing."
 
-The application exports OTLP to the Collector every 15 seconds for the lab. The Collector exports metrics with stable OTLP/HTTP to Prometheus's native OTLP receiver. Prometheus also uses its normal pull model to scrape the Collector, backends, and cAdvisor. Prometheus will promote only a reviewed set of resource attributes and retain the default suffix-aware metric translation initially.
+The application and Traefik export OTLP to the Collector every 15 seconds for the lab. The Collector exports metrics with stable OTLP/HTTP to Prometheus's native OTLP receiver. Prometheus also uses its normal pull model to scrape the Collector, backends, and cAdvisor. Prometheus will promote only a reviewed set of resource attributes and retain the default suffix-aware metric translation initially.
 
 ### 6.3 Traces
 
-Automatic instrumentation will create FastAPI/ASGI server spans. Manual spans inside `/work` will demonstrate domain boundaries such as validation, calculation, and persistence simulation. Span names remain low-cardinality and use route/operation names, never IDs.
+Traefik creates the edge span, propagates W3C trace context to the selected replica, and exports through OTLP. Automatic instrumentation creates the FastAPI/ASGI server span as its downstream child. Manual spans inside `/work` demonstrate domain boundaries such as validation, calculation, and persistence simulation. Span names remain low-cardinality and use route/operation names, never IDs.
 
 Local sampling starts at 100% so learning results are deterministic. Production guidance will use parent-based probabilistic head sampling or a deliberately designed Collector tail-sampling tier. Tail sampling is not enabled casually: it requires enough memory and routing all spans of a trace to the same sampling decision point.
 
@@ -195,6 +195,8 @@ Application, Granian, and Traefik access logs go to stdout/stderr as one JSON ob
 - trace ID and span ID when a sampled/current span exists
 - replica identity and process PID for diagnosis
 - exception type and stack trace for server errors
+
+Traefik access logs keep a reviewed field set and the safe request/response correlation header only; arbitrary headers, cookies, and query parameters are dropped. Routine health-probe access events are filtered before Loki ingestion so they do not dominate the learning logs.
 
 Logs must never contain credentials, authorization/cookie headers, full request bodies, or unnecessary personal data. Log volume is controlled by levels and sampling of repetitive success events; errors are never silently sampled away.
 
@@ -221,7 +223,7 @@ The primary investigation workflow will be:
 
 ## 7. Collector pipelines
 
-The Collector will receive OTLP gRPC and HTTP but the application will use one explicitly chosen protocol (gRPC initially). Its configuration will include:
+The Collector will receive OTLP gRPC and HTTP. The application and Traefik will each use one explicitly configured protocol (gRPC initially). Its configuration will include:
 
 - `memory_limiter` before `batch` to prevent uncontrolled collector memory use.
 - `batch` for efficient export.
@@ -305,6 +307,7 @@ Optional profiles:
 - Services use `read_only`, `tmpfs`, dropped capabilities, and `no-new-privileges` where the upstream image supports them.
 - cAdvisor host mounts and the Docker socket used by Alloy/Traefik are explicit, documented exceptions.
 - Only Traefik's API entrypoint and Grafana need normal host access. The API replicas expose port 8000 only to internal Docker networks. Any backend port exposed for learning binds to `127.0.0.1`, never all interfaces.
+- The Traefik dashboard/API is disabled by default; if enabled in the debug profile, it binds only to `127.0.0.1` and is clearly marked local-only.
 - Unauthenticated local Tempo, Loki, Prometheus, and Collector receivers stay on an internal Docker network.
 - Config files are mounted read-only; writable data uses named volumes.
 - No secrets or default production passwords are committed. `.env.example` contains only safe configuration.
@@ -370,7 +373,7 @@ Acceptance: one command builds and starts Traefik plus four healthy API containe
 
 Add JSON stdout logging, request IDs, trace placeholders/context binding, exception handling, redaction tests, compatible Granian logging, and Traefik JSON access logs.
 
-Acceptance: each request produces valid single-line JSON with bounded fields; secrets are absent; errors include useful exception context; no duplicate access log.
+Acceptance: each request produces valid single-line JSON with bounded fields; secrets are absent; errors include useful exception context; there is exactly one edge access record and one application completion record per eligible request rather than duplicates within either layer.
 
 ### Step 3: OpenTelemetry traces
 
@@ -424,6 +427,7 @@ Every implementation change should use checks appropriate to its layer:
 
 - `docker compose config` for resolved Compose validity.
 - Application formatting, linting, type checking, unit tests, and integration tests inside containers.
+- Traefik static configuration validation plus a routing test that observes all four healthy backends and excludes a stopped/unhealthy replica.
 - Collector configuration validation/startup smoke test.
 - `promtool check config`, `promtool check rules`, and rule unit tests.
 - Alertmanager configuration validation.
@@ -443,6 +447,7 @@ The final stack is accepted only when a new user can clone it, run one documente
 4. **Logs use stdout plus Alloy.** This is more robust for container operations than coupling normal application logs to a remote exporter.
 5. **Single-node backends are local-only.** Production storage, authentication, tenancy, durability, and HA require a separate design.
 6. **Version compatibility is verified during implementation.** Image versions will be pinned together only after configuration and correlation features pass tests.
+7. **Four replicas on one Docker host do not provide host-level HA.** They demonstrate replica failure and horizontal routing; real availability requires multiple nodes and an HA ingress/control plane.
 
 ## 13. Primary references
 
