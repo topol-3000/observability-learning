@@ -13,6 +13,10 @@ from uuid import UUID
 import pytest
 from fastapi import Request
 from httpx2 import ASGITransport, AsyncClient
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
+from opentelemetry.trace import SpanKind, StatusCode
 
 from observability_demo.logging import JsonFormatter, trace_log_context
 from observability_demo.main import (
@@ -21,6 +25,7 @@ from observability_demo.main import (
     REQUEST_ID_HEADER,
     create_app,
 )
+from observability_demo.tracing import create_trace_runtime, service_resource
 
 pytestmark = pytest.mark.anyio
 
@@ -32,13 +37,26 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    application = create_app()
+    application = create_app(create_trace_runtime(enabled=False))
     async with application.router.lifespan_context(application):
         transport = ASGITransport(app=application)
         async with AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as test_client:
             yield test_client
+
+
+@pytest.fixture
+async def traced_client() -> AsyncIterator[tuple[AsyncClient, InMemorySpanExporter]]:
+    exporter = InMemorySpanExporter()
+    runtime = create_trace_runtime(exporter=exporter, enabled=True, batch=False)
+    application = create_app(runtime)
+    async with application.router.lifespan_context(application):
+        transport = ASGITransport(app=application)
+        async with AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as test_client:
+            yield test_client, exporter
 
 
 @pytest.fixture
@@ -127,6 +145,7 @@ async def test_request_emits_one_bounded_json_completion_record(
     assert record["severity"] == "INFO"
     assert record["logger"] == "observability_demo.main"
     assert record["service.name"] == "observability-demo-api"
+    assert record["service.namespace"] == "learning"
     assert record["service.version"] == "0.1.0"
     assert record["deployment.environment.name"] == "local"
     UUID(str(record["service.instance.id"]))
@@ -219,7 +238,7 @@ async def test_error_completion_has_exception_context_without_message(
 async def test_request_secrets_and_exception_message_are_never_logged(
     log_output: io.StringIO,
 ) -> None:
-    application = create_app()
+    application = create_app(create_trace_runtime(enabled=False))
 
     @application.post("/unexpected")
     async def unexpected(request: Request) -> None:
@@ -290,7 +309,7 @@ async def test_liveness_does_not_depend_on_readiness(client: AsyncClient) -> Non
 
 
 async def test_readiness_tracks_application_lifespan() -> None:
-    application = create_app()
+    application = create_app(create_trace_runtime(enabled=False))
 
     assert application.state.ready is False
     async with application.router.lifespan_context(application):
@@ -304,3 +323,100 @@ async def test_readiness_tracks_application_lifespan() -> None:
             assert response.json() == {"status": "ready"}
 
     assert application.state.ready is False
+
+
+async def test_work_trace_has_remote_parent_and_bounded_manual_children(
+    traced_client: tuple[AsyncClient, InMemorySpanExporter],
+    log_output: io.StringIO,
+) -> None:
+    client, exporter = traced_client
+    trace_id = "1234567890abcdef1234567890abcdef"
+    remote_parent_id = "1234567890abcdef"
+
+    response = await client.get(
+        "/work",
+        params={"units": 2},
+        headers={"traceparent": f"00-{trace_id}-{remote_parent_id}-01"},
+    )
+
+    assert response.status_code == 200
+    spans = exporter.get_finished_spans()
+    server_span = next(span for span in spans if span.kind is SpanKind.SERVER)
+    assert f"{server_span.context.trace_id:032x}" == trace_id
+    assert server_span.parent is not None
+    assert f"{server_span.parent.span_id:016x}" == remote_parent_id
+    assert server_span.resource.attributes["service.name"] == ("observability-demo-api")
+    assert server_span.resource.attributes["service.namespace"] == "learning"
+    UUID(str(server_span.resource.attributes["service.instance.id"]))
+
+    manual_spans = {
+        span.name: span for span in spans if span.name.startswith("demo.work.")
+    }
+    assert set(manual_spans) == {
+        "demo.work.validate",
+        "demo.work.calculate",
+        "demo.work.persist",
+    }
+    assert all(
+        span.parent is not None
+        and span.parent.span_id == server_span.context.span_id
+        and span.context.trace_id == server_span.context.trace_id
+        for span in manual_spans.values()
+    )
+    assert manual_spans["demo.work.validate"].attributes == {
+        "demo.work.units": 2,
+        "demo.work.outcome": "success",
+    }
+    for name in ("demo.work.calculate", "demo.work.persist"):
+        assert manual_spans[name].attributes == {"demo.work.outcome": "success"}
+
+    completion = completion_logs(log_output)[0]
+    assert completion["trace_id"] == trace_id
+    assert completion["span_id"] == f"{server_span.context.span_id:016x}"
+
+
+async def test_health_requests_do_not_create_spans(
+    traced_client: tuple[AsyncClient, InMemorySpanExporter],
+) -> None:
+    client, exporter = traced_client
+
+    assert (await client.get("/health/live")).status_code == 200
+    assert (await client.get("/health/ready")).status_code == 200
+
+    assert exporter.get_finished_spans() == ()
+
+
+async def test_error_span_is_failed_without_exception_message(
+    traced_client: tuple[AsyncClient, InMemorySpanExporter],
+) -> None:
+    client, exporter = traced_client
+
+    response = await client.get("/error")
+
+    assert response.status_code == 500
+    server_span = next(
+        span for span in exporter.get_finished_spans() if span.kind is SpanKind.SERVER
+    )
+    assert server_span.status.status_code is StatusCode.ERROR
+    exception_event = next(
+        event for event in server_span.events if event.name == "exception"
+    )
+    assert exception_event.attributes["exception.type"] == (
+        "observability_demo.main.IntentionalDemoError"
+    )
+    assert str(exception_event.attributes["exception.stacktrace"]).startswith(
+        "Traceback (most recent call last):"
+    )
+    assert all(
+        "exception.message" not in event.attributes for event in server_span.events
+    )
+
+
+def test_trace_resource_matches_structured_log_identity() -> None:
+    attributes = service_resource().attributes
+
+    assert attributes["service.name"] == "observability-demo-api"
+    assert attributes["service.namespace"] == "learning"
+    assert attributes["service.version"] == "0.1.0"
+    assert attributes["deployment.environment.name"] == "local"
+    UUID(str(attributes["service.instance.id"]))

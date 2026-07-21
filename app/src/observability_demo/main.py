@@ -6,7 +6,7 @@ import os
 import socket
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from typing import Annotated, Any
 
 from fastapi import FastAPI, Query, Request
@@ -16,7 +16,15 @@ from observability_demo.logging import (
     configure_application_logging,
     new_request_id,
     request_log_context,
+    trace_log_context,
     valid_request_id,
+)
+from observability_demo.tracing import (
+    TraceRuntime,
+    create_trace_runtime,
+    current_trace_ids,
+    instrument_fastapi,
+    mark_current_span_failed,
 )
 
 APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
@@ -45,6 +53,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         application.state.ready = False
+        application.state.trace_runtime.shutdown()
 
 
 def perform_bounded_work(units: int) -> int:
@@ -77,14 +86,16 @@ def request_outcome(status_code: int) -> str:
     return "success"
 
 
-def create_app() -> FastAPI:
+def create_app(trace_runtime: TraceRuntime | None = None) -> FastAPI:
     """Build a new application instance for the server and tests."""
+    runtime = trace_runtime if trace_runtime is not None else create_trace_runtime()
     application = FastAPI(
         title="Observability Demo API",
         version=APP_VERSION,
         lifespan=lifespan,
     )
     application.state.ready = False
+    application.state.trace_runtime = runtime
 
     @application.middleware("http")
     async def structured_request_log(
@@ -121,6 +132,8 @@ def create_app() -> FastAPI:
             finally:
                 if request.url.path not in HEALTH_PATHS:
                     status_code = response.status_code if response is not None else 500
+                    if status_code >= 500:
+                        mark_current_span_failed(request_exception)
                     event_fields = {
                         "duration_ms": round(
                             (time.perf_counter() - started_at) * 1_000, 3
@@ -130,21 +143,28 @@ def create_app() -> FastAPI:
                         "http.response.status_code": status_code,
                         "http.route": request_route(request),
                     }
-                    if request_exception is None:
-                        logger.info(
-                            "http_request_completed",
-                            extra={"event_fields": event_fields},
-                        )
-                    else:
-                        logger.error(
-                            "http_request_completed",
-                            extra={"event_fields": event_fields},
-                            exc_info=(
-                                type(request_exception),
-                                request_exception,
-                                request_exception.__traceback__,
-                            ),
-                        )
+                    trace_ids = current_trace_ids()
+                    log_context = (
+                        nullcontext()
+                        if trace_ids is None
+                        else trace_log_context(*trace_ids)
+                    )
+                    with log_context:
+                        if request_exception is None:
+                            logger.info(
+                                "http_request_completed",
+                                extra={"event_fields": event_fields},
+                            )
+                        else:
+                            logger.error(
+                                "http_request_completed",
+                                extra={"event_fields": event_fields},
+                                exc_info=(
+                                    type(request_exception),
+                                    request_exception,
+                                    request_exception.__traceback__,
+                                ),
+                            )
 
     @application.exception_handler(IntentionalDemoError)
     async def handle_intentional_error(
@@ -167,7 +187,25 @@ def create_app() -> FastAPI:
     async def work(
         units: Annotated[int, Query(ge=1, le=MAX_WORK_UNITS)] = 10,
     ) -> dict[str, int | str]:
-        checksum = perform_bounded_work(units)
+        tracer = application.state.trace_runtime.tracer
+        with tracer.start_as_current_span(
+            "demo.work.validate",
+            attributes={
+                "demo.work.units": units,
+                "demo.work.outcome": "success",
+            },
+        ):
+            validated_units = units
+        with tracer.start_as_current_span(
+            "demo.work.calculate",
+            attributes={"demo.work.outcome": "success"},
+        ):
+            checksum = perform_bounded_work(validated_units)
+        with tracer.start_as_current_span(
+            "demo.work.persist",
+            attributes={"demo.work.outcome": "success"},
+        ):
+            await asyncio.sleep(0)
         return {"status": "completed", "units": units, "checksum": checksum}
 
     @application.get("/slow")
@@ -200,6 +238,7 @@ def create_app() -> FastAPI:
             content={"status": "ready" if is_ready else "not ready"},
         )
 
+    instrument_fastapi(application, runtime)
     return application
 
 

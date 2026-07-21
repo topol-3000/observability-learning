@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "observability-demo-api")
+SERVICE_NAMESPACE = os.getenv("OTEL_SERVICE_NAMESPACE", "learning")
 SERVICE_VERSION = os.getenv("APP_VERSION", "0.1.0")
 DEPLOYMENT_ENVIRONMENT = os.getenv("DEPLOYMENT_ENVIRONMENT", "local")
 SERVICE_INSTANCE_ID = os.environ.setdefault("SERVICE_INSTANCE_ID", str(uuid4()))
@@ -48,6 +49,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "event": record.getMessage(),
             "service.name": SERVICE_NAME,
+            "service.namespace": SERVICE_NAMESPACE,
             "service.version": SERVICE_VERSION,
             "deployment.environment.name": DEPLOYMENT_ENVIRONMENT,
             "service.instance.id": SERVICE_INSTANCE_ID,

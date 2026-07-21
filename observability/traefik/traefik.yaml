@@ -14,6 +14,18 @@ entryPoints:
 ping:
   entryPoint: health
 
+tracing:
+  serviceName: observability-demo-edge
+  resourceAttributes:
+    service.namespace: learning
+    service.version: 3.7.8
+    deployment.environment.name: local
+  sampleRate: 1.0
+  otlp:
+    grpc:
+      endpoint: otel-collector:4317
+      insecure: true
+
 providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"

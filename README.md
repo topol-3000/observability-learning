@@ -1,13 +1,16 @@
 # Docker Observability Learning Stack
 
-Steps 1 and 2 provide a containerized FastAPI service behind Traefik with
-structured, correlated JSON logs. Docker Compose runs four API replicas, each
-with one Granian worker. The API containers have no host port; Traefik is the
-only published HTTP entrypoint.
+Steps 1 through 3 provide a containerized FastAPI service behind Traefik with
+structured JSON logs and end-to-end OpenTelemetry traces. Docker Compose runs
+four API replicas, each with one Granian worker. Traefik and the replicas export
+OTLP/gRPC spans through an OpenTelemetry Collector to Tempo. The API and
+telemetry containers have no host ports; Traefik is the only published HTTP
+entrypoint.
 
 The implementation plans are recorded in
-[`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md) and
-[`docs/STEP_2_IMPLEMENTATION_PLAN.md`](docs/STEP_2_IMPLEMENTATION_PLAN.md).
+[`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md),
+[`docs/STEP_2_IMPLEMENTATION_PLAN.md`](docs/STEP_2_IMPLEMENTATION_PLAN.md), and
+[`docs/STEP_3_IMPLEMENTATION_PLAN.md`](docs/STEP_3_IMPLEMENTATION_PLAN.md).
 
 ## Prerequisites
 
@@ -20,7 +23,7 @@ The application image is pinned to CPython 3.14.6. Direct Python dependencies
 and quality tools are pinned to the latest stable versions selected for this
 implementation and resolved transitively by `app/uv.lock`.
 
-## Start the baseline
+## Start the stack
 
 ```bash
 cp .env.example .env
@@ -67,13 +70,43 @@ Application completion records contain stable service metadata, request ID,
 replica/process identity, method, route template, status, outcome, and duration.
 They do not contain raw URLs, query strings, headers, cookies, or bodies. Error
 records add exception type and traceback frames while clients still receive a
-generic response. Trace and span fields are omitted until Step 3 binds real
-trace context.
+generic response. Eligible traced requests also carry the current lowercase
+`trace_id` and `span_id`, which can be used to retrieve the same trace from
+Tempo. Health requests remain excluded from application logs and traces.
 
 Granian process records use the same one-line JSON format. Its access logger is
 disabled, so each eligible request has one application completion record.
 Traefik emits one separately identifiable JSON edge record, retains only the
 request ID correlation header, and excludes the two routine health routes.
+
+## Inspect and verify traces
+
+Traefik creates the edge spans and propagates W3C Trace Context to the selected
+API replica. FastAPI instrumentation creates the server span, and `/work` adds
+stable `demo.work.validate`, `demo.work.calculate`, and `demo.work.persist`
+children. Sampling is 100% for this local learning stack.
+
+Run the end-to-end acceptance helper:
+
+```bash
+docker compose --profile test run --build --rm trace-smoke
+```
+
+It supplies known W3C trace IDs, retrieves the resulting traces from Tempo's
+internal API, verifies edge/application continuity and the manual child spans,
+and fails unless repeated requests expose four distinct application
+`service.instance.id` values. Its output includes verified trace IDs; search
+for one in application logs to inspect log/trace correlation:
+
+```bash
+docker compose logs --no-log-prefix api | grep '<verified-trace-id>'
+```
+
+Tempo and both Collector receivers intentionally remain on the internal
+`telemetry` network. Grafana access is added in Step 6. The Collector applies
+memory limiting and batching, removes raw URL/query/body and sensitive header
+attributes, and uses a bounded persistent retry queue before exporting to
+Tempo.
 
 ## Verify load distribution
 
@@ -121,14 +154,15 @@ docker compose config --quiet
 
 ## Stop or reset
 
-Normal shutdown preserves any future named-volume data:
+Normal shutdown preserves Tempo traces and the Collector's persistent queue:
 
 ```bash
 docker compose down
 ```
 
-`docker compose down --volumes` is the explicit destructive reset once later
-steps add persistent observability data.
+`docker compose down --volumes` is the explicit destructive reset. It removes
+the Tempo trace store and Collector queue in addition to the containers and
+networks.
 
 ## Security note
 
