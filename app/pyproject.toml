@@ -1,0 +1,31 @@
+[project]
+name = "observability-demo"
+version = "0.1.0"
+description = "Containerized FastAPI baseline for an observability learning stack"
+requires-python = "==3.14.6"
+dependencies = [
+    "fastapi==0.139.2",
+    "granian==2.7.9",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2==2.7.0",
+    "pytest==9.1.1",
+    "ruff==0.15.22",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["ASYNC", "B", "E", "F", "I", "UP"]

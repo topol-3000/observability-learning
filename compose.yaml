@@ -1,0 +1,124 @@
+name: observability-demo
+
+services:
+  traefik:
+    image: traefik:v3.7.8
+    command:
+      - --configFile=/etc/traefik/traefik.yaml
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./observability/traefik/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      # Local-learning exception: this socket exposes sensitive Docker metadata.
+      # A production deployment should use a restricted API proxy or native discovery.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - edge
+      - ingress
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  api:
+    image: observability-demo-api:${APP_VERSION:-0.1.0}
+    build:
+      context: ./app
+      target: runtime
+      args:
+        APP_VERSION: ${APP_VERSION:-0.1.0}
+    scale: 4
+    expose:
+      - "8000"
+    networks:
+      - edge
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.api.entrypoints: web
+      traefik.http.routers.api.rule: PathPrefix(`/`)
+      traefik.http.routers.api.service: api
+      traefik.http.services.api.loadbalancer.server.port: "8000"
+      traefik.http.services.api.loadbalancer.healthcheck.path: /health/ready
+      traefik.http.services.api.loadbalancer.healthcheck.interval: 5s
+      traefik.http.services.api.loadbalancer.healthcheck.timeout: 2s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 35s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  api-test:
+    image: observability-demo-api-test:${APP_VERSION:-0.1.0}
+    build:
+      context: ./app
+      target: test
+    profiles:
+      - test
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  smoke:
+    image: observability-demo-api-test:${APP_VERSION:-0.1.0}
+    build:
+      context: ./app
+      target: test
+    profiles:
+      - test
+    command: ["python", "tests/smoke_distribution.py"]
+    environment:
+      EXPECTED_REPLICAS: "4"
+      SMOKE_URL: http://traefik:8080/debug/instance
+    depends_on:
+      traefik:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  edge:
+    driver: bridge
+    internal: true
+  ingress:
+    driver: bridge

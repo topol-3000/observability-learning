@@ -1,0 +1,25 @@
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: false
+
+entryPoints:
+  web:
+    address: ":8080"
+  health:
+    address: ":8082"
+
+ping:
+  entryPoint: health
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    watch: true
+
+log:
+  level: INFO
+

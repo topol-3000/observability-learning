@@ -302,7 +302,11 @@ Optional profiles:
 ### Reproducibility and security
 
 - Every image uses a tested explicit version and, where practical, an immutable digest. No `latest` tags.
+- The application uses CPython 3.14.6 exactly.
+- Direct Python libraries and development tools use the latest stable releases available when a step is implemented, are pinned exactly, and have their transitive resolution committed in `uv.lock`. Upgrades are deliberate and revalidated rather than floating at container startup.
 - Python dependencies are locked and installed in a multi-stage application image.
+- Ruff provides formatting and linting; tests provide behavioral verification. No separate static type checker is configured.
+- Source files do not use `from __future__ import annotations`; Python 3.14 evaluates annotations lazily without that obsolete compatibility import.
 - The app image runs as a non-root user, has a minimal runtime, and includes a container health check.
 - Services use `read_only`, `tmpfs`, dropped capabilities, and `no-new-privileges` where the upstream image supports them.
 - cAdvisor host mounts and the Docker socket used by Alloy/Traefik are explicit, documented exceptions.
@@ -426,7 +430,7 @@ Document changes required for a real environment: replace single-host Compose sc
 Every implementation change should use checks appropriate to its layer:
 
 - `docker compose config` for resolved Compose validity.
-- Application formatting, linting, type checking, unit tests, and integration tests inside containers.
+- Application formatting, linting, unit tests, and integration tests inside containers.
 - Traefik static configuration validation plus a routing test that observes all four healthy backends and excludes a stopped/unhealthy replica.
 - Collector configuration validation/startup smoke test.
 - `promtool check config`, `promtool check rules`, and rule unit tests.
