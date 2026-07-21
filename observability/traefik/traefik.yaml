@@ -22,4 +22,25 @@ providers:
 
 log:
   level: INFO
+  format: json
 
+accessLog:
+  format: json
+  fields:
+    defaultMode: drop
+    names:
+      StartUTC: keep
+      Duration: keep
+      RouterName: keep
+      ServiceName: keep
+      RequestMethod: keep
+      RequestProtocol: keep
+      OriginStatus: keep
+      DownstreamStatus: keep
+      RetryAttempts: keep
+    headers:
+      defaultMode: drop
+      names:
+        X-Request-ID: keep
+    queryParameters:
+      defaultMode: drop

@@ -37,6 +37,7 @@ RUN groupadd --system --gid 10001 app \
 WORKDIR /app
 COPY --from=builder --chown=10001:10001 /build/.venv /app/.venv
 COPY --chown=10001:10001 src ./src
+COPY --chown=10001:10001 granian-log.json ./granian-log.json
 
 ENV APP_VERSION=${APP_VERSION} \
     PATH="/app/.venv/bin:${PATH}" \
@@ -51,4 +52,4 @@ HEALTHCHECK --interval=5s --timeout=2s --start-period=5s --retries=5 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=1).read()"]
 
 ENTRYPOINT ["python", "-m", "granian"]
-CMD ["--interface", "asgi", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--backpressure", "64", "--workers-kill-timeout", "30s", "--respawn-failed-workers", "--log-level", "info", "--no-access-log", "observability_demo.main:app"]
+CMD ["--interface", "asgi", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--backpressure", "64", "--workers-kill-timeout", "30s", "--respawn-failed-workers", "--log-level", "info", "--log-config", "/app/granian-log.json", "--no-access-log", "observability_demo.main:app"]

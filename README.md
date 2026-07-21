@@ -1,11 +1,13 @@
 # Docker Observability Learning Stack
 
-Step 1 provides a containerized FastAPI service behind Traefik. Docker Compose
-runs four API replicas, each with one Granian worker. The API containers have no
-host port; Traefik is the only published HTTP entrypoint.
+Steps 1 and 2 provide a containerized FastAPI service behind Traefik with
+structured, correlated JSON logs. Docker Compose runs four API replicas, each
+with one Granian worker. The API containers have no host port; Traefik is the
+only published HTTP entrypoint.
 
-The implementation plan is recorded in
-[`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md).
+The implementation plans are recorded in
+[`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md) and
+[`docs/STEP_2_IMPLEMENTATION_PLAN.md`](docs/STEP_2_IMPLEMENTATION_PLAN.md).
 
 ## Prerequisites
 
@@ -42,6 +44,36 @@ Check the resolved containers and their health:
 ```bash
 docker compose ps
 ```
+
+## Inspect structured logs
+
+Every non-health request accepts a canonical UUID in `X-Request-ID`, or gets a
+generated UUID, and returns the chosen value in the same response header:
+
+```bash
+curl --include \
+  --header 'X-Request-ID: 47f70a2d-2512-44ee-8f2c-0f84f5631e98' \
+  'http://127.0.0.1:8080/work?units=2'
+```
+
+Inspect the application completion record and Traefik edge access record:
+
+```bash
+docker compose logs --no-log-prefix api
+docker compose logs --no-log-prefix traefik
+```
+
+Application completion records contain stable service metadata, request ID,
+replica/process identity, method, route template, status, outcome, and duration.
+They do not contain raw URLs, query strings, headers, cookies, or bodies. Error
+records add exception type and traceback frames while clients still receive a
+generic response. Trace and span fields are omitted until Step 3 binds real
+trace context.
+
+Granian process records use the same one-line JSON format. Its access logger is
+disabled, so each eligible request has one application completion record.
+Traefik emits one separately identifiable JSON edge record, retains only the
+request ID correlation header, and excludes the two routine health routes.
 
 ## Verify load distribution
 

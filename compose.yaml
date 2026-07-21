@@ -47,6 +47,9 @@ services:
     scale: 4
     expose:
       - "8000"
+    environment:
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-observability-demo-api}
+      DEPLOYMENT_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT:-local}
     networks:
       - edge
     labels:
@@ -54,6 +57,10 @@ services:
       traefik.http.routers.api.entrypoints: web
       traefik.http.routers.api.rule: PathPrefix(`/`)
       traefik.http.routers.api.service: api
+      traefik.http.routers.api-health.entrypoints: web
+      traefik.http.routers.api-health.rule: Path(`/health/live`) || Path(`/health/ready`)
+      traefik.http.routers.api-health.service: api
+      traefik.http.routers.api-health.observability.accesslogs: "false"
       traefik.http.services.api.loadbalancer.server.port: "8000"
       traefik.http.services.api.loadbalancer.healthcheck.path: /health/ready
       traefik.http.services.api.loadbalancer.healthcheck.interval: 5s
