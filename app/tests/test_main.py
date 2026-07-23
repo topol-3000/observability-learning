@@ -20,7 +20,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.trace import SpanKind, StatusCode
 
 from observability_demo.logging import JsonFormatter, trace_log_context
-from observability_demo.main import REQUEST_ID_HEADER, create_app
+from observability_demo.main import create_app
+from observability_demo.middleware import REQUEST_ID_HEADER
 from observability_demo.routes import (
     MAX_DELAY_SECONDS,
     MAX_WORK_UNITS,
@@ -175,7 +176,7 @@ async def test_request_emits_one_bounded_json_completion_record(
     assert len(records) == 1
     record = records[0]
     assert record["severity"] == "INFO"
-    assert record["logger"] == "observability_demo.main"
+    assert record["logger"] == "observability_demo.middleware"
     assert record["service.name"] == "observability-demo-api"
     assert record["service.namespace"] == "learning"
     assert record["service.version"] == "0.1.0"
