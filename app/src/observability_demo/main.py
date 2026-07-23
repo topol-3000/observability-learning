@@ -1,15 +1,12 @@
 """FastAPI application used by the observability learning stack."""
 
-import asyncio
 import logging
-import os
-import socket
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 from observability_demo.logging import (
@@ -20,6 +17,10 @@ from observability_demo.logging import (
     valid_request_id,
 )
 from observability_demo.metrics import MetricsRuntime, create_metrics_runtime
+from observability_demo.routes import (
+    IntentionalDemoError,
+    router,
+)
 from observability_demo.settings import ApplicationSettings
 from observability_demo.tracing import (
     TraceRuntime,
@@ -29,11 +30,8 @@ from observability_demo.tracing import (
     mark_current_span_failed,
 )
 
-APP_VERSION = ApplicationSettings().version
-INSTANCE_ID = socket.gethostname()
-MAX_WORK_UNITS = 100
-MAX_DELAY_SECONDS = 2.0
 REQUEST_ID_HEADER = "X-Request-ID"
+APP_VERSION = ApplicationSettings().version
 HEALTH_PATHS = frozenset({"/health/live", "/health/ready"})
 KNOWN_HTTP_METHODS = frozenset(
     {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
@@ -41,10 +39,6 @@ KNOWN_HTTP_METHODS = frozenset(
 
 configure_application_logging()
 logger = logging.getLogger(__name__)
-
-
-class IntentionalDemoError(Exception):
-    """An expected failure used by the error-observability exercises."""
 
 
 @asynccontextmanager
@@ -57,14 +51,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         application.state.ready = False
         application.state.metrics_runtime.shutdown()
         application.state.trace_runtime.shutdown()
-
-
-def perform_bounded_work(units: int) -> int:
-    """Perform deterministic, intentionally bounded CPU work."""
-    checksum = 0
-    for value in range(units * 1_000):
-        checksum = (checksum + value * value) % 1_000_003
-    return checksum
 
 
 def request_method(method: str) -> str:
@@ -197,80 +183,7 @@ def create_app(
             content={"detail": "Internal Server Error"},
         )
 
-    @application.get("/")
-    async def root() -> dict[str, str]:
-        return {
-            "message": "observability demo API",
-            "version": APP_VERSION,
-        }
-
-    @application.get("/work")
-    async def work(
-        units: Annotated[int, Query(ge=1, le=MAX_WORK_UNITS)] = 10,
-    ) -> dict[str, int | str]:
-        started_at = time.perf_counter()
-        tracer = application.state.trace_runtime.tracer
-        try:
-            with tracer.start_as_current_span(
-                "demo.work.validate",
-                attributes={
-                    "demo.work.units": units,
-                    "demo.work.outcome": "success",
-                },
-            ):
-                validated_units = units
-            with tracer.start_as_current_span(
-                "demo.work.calculate",
-                attributes={"demo.work.outcome": "success"},
-            ):
-                checksum = perform_bounded_work(validated_units)
-            with tracer.start_as_current_span(
-                "demo.work.persist",
-                attributes={"demo.work.outcome": "success"},
-            ):
-                await asyncio.sleep(0)
-        except Exception:
-            metric_runtime.record_work_completed(
-                time.perf_counter() - started_at,
-                "error",
-            )
-            raise
-        metric_runtime.record_work_completed(
-            time.perf_counter() - started_at,
-            "success",
-        )
-        return {"status": "completed", "units": units, "checksum": checksum}
-
-    @application.get("/slow")
-    async def slow(
-        delay_seconds: Annotated[
-            float,
-            Query(gt=0, le=MAX_DELAY_SECONDS),
-        ] = 0.25,
-    ) -> dict[str, float | str]:
-        await asyncio.sleep(delay_seconds)
-        return {"status": "completed", "delay_seconds": delay_seconds}
-
-    @application.get("/error")
-    async def error() -> None:
-        raise IntentionalDemoError("intentional observability exercise failure")
-
-    @application.get("/debug/instance")
-    async def instance() -> dict[str, int | str]:
-        return {"instance_id": INSTANCE_ID, "pid": os.getpid()}
-
-    @application.get("/health/live")
-    async def live() -> dict[str, str]:
-        return {"status": "live"}
-
-    @application.get("/health/ready")
-    async def ready(request: Request) -> JSONResponse:
-        is_ready = bool(getattr(request.app.state, "ready", False))
-        return JSONResponse(
-            status_code=200 if is_ready else 503,
-            content={"status": "ready" if is_ready else "not ready"},
-        )
-
+    application.include_router(router)
     instrument_fastapi(application, runtime)
     return application
 

@@ -20,11 +20,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.trace import SpanKind, StatusCode
 
 from observability_demo.logging import JsonFormatter, trace_log_context
-from observability_demo.main import (
+from observability_demo.main import REQUEST_ID_HEADER, create_app
+from observability_demo.routes import (
     MAX_DELAY_SECONDS,
     MAX_WORK_UNITS,
-    REQUEST_ID_HEADER,
-    create_app,
 )
 from observability_demo.metrics import create_metrics_runtime
 from observability_demo.tracing import create_trace_runtime, service_resource
@@ -435,7 +434,7 @@ async def test_error_span_is_failed_without_exception_message(
         event for event in server_span.events if event.name == "exception"
     )
     assert exception_event.attributes["exception.type"] == (
-        "observability_demo.main.IntentionalDemoError"
+        "observability_demo.routes.IntentionalDemoError"
     )
     assert str(exception_event.attributes["exception.stacktrace"]).startswith(
         "Traceback (most recent call last):"
