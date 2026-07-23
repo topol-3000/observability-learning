@@ -1,21 +1,23 @@
 # Docker Observability Learning Stack
 
-Steps 1 through 5 provide a containerized FastAPI service behind Traefik with
+Steps 1 through 6 provide a containerized FastAPI service behind Traefik with
 structured JSON logs, end-to-end OpenTelemetry traces, and OpenTelemetry
 metrics stored in Prometheus, plus Docker log collection through Alloy into
-Loki. Docker Compose runs four API replicas, each with one Granian worker.
-Traefik and the replicas export OTLP/gRPC signals through an OpenTelemetry
-Collector; traces go to Tempo and metrics go to Prometheus's internal OTLP
-receiver. Alloy collects only explicitly opted-in API and Traefik containers.
-The API and telemetry containers have no host ports; Traefik is the only
-published HTTP entrypoint.
+Loki. Grafana provisions the three data sources, a symptom-focused dashboard,
+and bidirectional signal links. Docker Compose runs four API replicas, each
+with one Granian worker. Traefik and the replicas export OTLP/gRPC signals
+through an OpenTelemetry Collector; traces go to Tempo and metrics go to
+Prometheus's internal OTLP receiver. Alloy collects only explicitly opted-in
+API and Traefik containers. Backend APIs remain internal; only Traefik and
+Grafana publish loopback host ports.
 
 The implementation plans are recorded in
 [`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md),
 [`docs/STEP_2_IMPLEMENTATION_PLAN.md`](docs/STEP_2_IMPLEMENTATION_PLAN.md), and
 [`docs/STEP_3_IMPLEMENTATION_PLAN.md`](docs/STEP_3_IMPLEMENTATION_PLAN.md),
 [`docs/STEP_4_IMPLEMENTATION_PLAN.md`](docs/STEP_4_IMPLEMENTATION_PLAN.md), and
-[`docs/STEP_5_IMPLEMENTATION_PLAN.md`](docs/STEP_5_IMPLEMENTATION_PLAN.md).
+[`docs/STEP_5_IMPLEMENTATION_PLAN.md`](docs/STEP_5_IMPLEMENTATION_PLAN.md), and
+[`docs/STEP_6_IMPLEMENTATION_PLAN.md`](docs/STEP_6_IMPLEMENTATION_PLAN.md).
 
 ## Prerequisites
 
@@ -35,7 +37,8 @@ cp .env.example .env
 docker compose up --build --detach --wait
 ```
 
-Open <http://127.0.0.1:8080/>. The useful Step 1 endpoints are:
+Open the API at <http://127.0.0.1:8080/> and Grafana at
+<http://127.0.0.1:3000/>. The useful application endpoints are:
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -108,10 +111,10 @@ docker compose logs --no-log-prefix api | grep '<verified-trace-id>'
 ```
 
 Tempo and both Collector receivers intentionally remain on the internal
-`telemetry` network. Grafana access is added in Step 6. The Collector applies
-memory limiting and batching, removes raw URL/query/body and sensitive header
-attributes, and uses a bounded persistent retry queue before exporting to
-Tempo.
+`telemetry` network. Grafana queries Tempo through its server-side data-source
+proxy. The Collector applies memory limiting and batching, removes raw
+URL/query/body and sensitive header attributes, and uses a bounded persistent
+retry queue before exporting to Tempo.
 
 ## Inspect and verify metrics
 
@@ -122,6 +125,11 @@ supplies bounded count and duration metrics. Their only data-point dimensions
 are method, route template, status/outcome, and the fixed work outcome; request
 and trace IDs, raw URLs/query strings, replica IDs, PIDs, and request values are
 not metric labels.
+
+Application duration histograms use explicit second-based boundaries, including
+sub-second buckets, so dashboard percentiles describe the bounded demo routes
+usefully. Prometheus exemplar storage is enabled so sampled measurements can
+retain their trace links.
 
 Traefik additionally exports edge and backend observations. Prometheus scrapes
 the Collector, Tempo, Loki, Alloy, Blackbox Exporter, and itself. The Blackbox
@@ -189,8 +197,8 @@ requires Traefik plus all four application replica identities, rejects any
 stream label outside the allowlist, verifies correlation-field searches, and
 checks that routine readiness traffic is absent.
 
-Loki remains internal until Grafana is provisioned in Step 6. The test image
-includes a small query helper that runs on the telemetry network. For example,
+Loki remains internal and is queried through Grafana or a test container on the
+telemetry network. The test image includes a small query helper. For example,
 list recent application completion records:
 
 ```bash
@@ -214,6 +222,58 @@ retention. Retention is time-based, not disk-usage-based, so the Loki volume
 should still be monitored on a constrained workstation. Alloy persists Docker
 reader state in its own named volume so a normal restart does not replay all
 available container history.
+
+## Investigate in Grafana
+
+Grafana starts with anonymous Viewer access for this loopback-only learning
+environment. Sign-up, anonymous editing, and the login form are disabled; no
+default admin credential is committed. Open the provisioned **Observability
+Demo Service** dashboard at:
+
+<http://127.0.0.1:3000/d/observability-demo-service>
+
+The dashboard starts with external readiness, healthy backend count, in-flight
+requests, and telemetry-target health. It then compares application and edge
+RED signals, shows request distribution across replicas from parsed log
+fields, and includes recent application errors, slow/error traces, and pipeline
+failure signals. cAdvisor CPU and memory panels are intentionally deferred to
+Step 7.
+
+Correlation is provisioned in both directions:
+
+- Prometheus duration exemplars carrying `trace_id` open the exact Tempo trace.
+- A Tempo span's **Logs for this span** link searches Loki by bounded service
+  label and exact JSON trace ID.
+- A parsed Loki log line exposes a **View trace** derived-field link to Tempo.
+- A Tempo span exposes request-rate, error-rate, and p95 links to Prometheus.
+
+Generate an example symptom and verify all provisioning and link contracts:
+
+```bash
+docker compose --profile test run --build --rm grafana-smoke
+```
+
+The helper sends known slow and failed requests, validates the read-only
+dashboard and stable data-source UIDs, then queries Tempo, Loki, and Prometheus
+through Grafana's data-source proxy. It succeeds only when the same slow trace
+is stored in Tempo, searchable in its exact log, and attached to a Prometheus
+duration exemplar.
+
+Dashboard and data-source definitions are mounted read-only from
+`observability/grafana/provisioning`; UI-only dashboard saves are disabled.
+Grafana's local database is persistent, but no manual setup is required. To
+repeat the clean-volume acceptance experiment, remove only Grafana and
+Prometheus state and recreate the stack:
+
+```bash
+docker compose down
+docker volume rm observability-demo_grafana-data \
+  observability-demo_prometheus-data
+docker compose up --build --detach --wait
+docker compose --profile test run --build --rm grafana-smoke
+```
+
+Removing named volumes permanently deletes their local learning data.
 
 ## Verify load distribution
 

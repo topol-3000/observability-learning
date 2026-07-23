@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: observability-demo
+    orgId: 1
+    folder: Learning
+    folderUid: learning
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

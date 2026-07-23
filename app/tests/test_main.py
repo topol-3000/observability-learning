@@ -21,7 +21,11 @@ from opentelemetry.trace import SpanKind, StatusCode
 
 from observability_demo.logging import JsonFormatter, trace_log_context
 from observability_demo.main import create_app
-from observability_demo.metrics import create_metrics_runtime
+from observability_demo.metrics import (
+    HTTP_DURATION_BUCKETS_SECONDS,
+    WORK_DURATION_BUCKETS_SECONDS,
+    create_metrics_runtime,
+)
 from observability_demo.middleware import REQUEST_ID_HEADER
 from observability_demo.routes import (
     MAX_DELAY_SECONDS,
@@ -496,6 +500,10 @@ async def test_http_metrics_use_route_templates_and_bounded_attributes(
     _, duration_points = metric_points(reader, "demo.http.server.request.duration")
     assert len(duration_points) == 3
     assert all(point.count == 1 and point.sum > 0 for point in duration_points)
+    assert all(
+        point.explicit_bounds == HTTP_DURATION_BUCKETS_SECONDS
+        for point in duration_points
+    )
 
 
 async def test_health_requests_do_not_emit_http_metrics(
@@ -533,6 +541,7 @@ async def test_work_metrics_record_count_duration_and_bounded_outcome(
     assert duration_points[0].attributes == {"demo.work.outcome": "success"}
     assert duration_points[0].count == 1
     assert duration_points[0].sum > 0
+    assert duration_points[0].explicit_bounds == WORK_DURATION_BUCKETS_SECONDS
 
 
 async def test_active_request_metric_returns_to_zero_after_concurrent_requests(

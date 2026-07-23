@@ -1,0 +1,75 @@
+apiVersion: 1
+
+prune: true
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id"\s*:\s*"([0-9a-f]{32})"'
+          datasourceUid: tempo
+          url: '$${__value.raw}'
+          urlDisplayLabel: View trace
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -2s
+        spanEndTimeShift: 2s
+        tags:
+          - key: service.name
+            value: service
+        filterByTraceID: true
+        filterBySpanID: false
+        customQuery: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        tags:
+          - key: service.name
+            value: service_name
+          - key: http.route
+            value: http_route
+        queries:
+          - name: Request rate
+            query: 'sum(rate(demo_http_server_request_count_total{$${__tags}}[5m]))'
+          - name: Error rate
+            query: 'sum(rate(demo_http_server_request_count_total{event_outcome="server_error",$${__tags}}[5m]))'
+          - name: p95 duration
+            query: 'histogram_quantile(0.95, sum by (le) (rate(demo_http_server_request_duration_seconds_bucket{$${__tags}}[5m])))'
+      nodeGraph:
+        enabled: true
+      search:
+        hide: false
+      traceQuery:
+        timeShiftEnabled: true
+        spanStartTimeShift: -2m
+        spanEndTimeShift: 2m

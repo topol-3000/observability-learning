@@ -10,11 +10,42 @@ from opentelemetry.sdk.metrics.export import (
     MetricReader,
     PeriodicExportingMetricReader,
 )
+from opentelemetry.sdk.metrics.view import (
+    ExplicitBucketHistogramAggregation,
+    View,
+)
 from opentelemetry.sdk.resources import Resource
 
 from observability_demo.logging import SERVICE_VERSION
 from observability_demo.settings import TelemetrySettings
 from observability_demo.tracing import INSTRUMENTATION_SCOPE, service_resource
+
+HTTP_DURATION_BUCKETS_SECONDS = (
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.075,
+    0.1,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    2.5,
+    5.0,
+)
+WORK_DURATION_BUCKETS_SECONDS = (
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+)
 
 
 def metrics_enabled_from_environment() -> bool:
@@ -107,6 +138,20 @@ def create_metrics_runtime(
     provider = MeterProvider(
         resource=service_resource() if resource is None else resource,
         metric_readers=[metric_reader],
+        views=[
+            View(
+                instrument_name="demo.http.server.request.duration",
+                aggregation=ExplicitBucketHistogramAggregation(
+                    boundaries=HTTP_DURATION_BUCKETS_SECONDS,
+                ),
+            ),
+            View(
+                instrument_name="demo.work.duration",
+                aggregation=ExplicitBucketHistogramAggregation(
+                    boundaries=WORK_DURATION_BUCKETS_SECONDS,
+                ),
+            ),
+        ],
         shutdown_on_exit=False,
     )
     meter = provider.get_meter(INSTRUMENTATION_SCOPE, SERVICE_VERSION)

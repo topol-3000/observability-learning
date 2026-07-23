@@ -121,3 +121,17 @@ class LogsSmokeSettings(EnvironmentSettings):
         default=90,
         validation_alias="LOGS_SMOKE_DEADLINE_SECONDS",
     )
+
+
+class GrafanaSmokeSettings(EnvironmentSettings):
+    """Settings for Grafana provisioning and correlation checks."""
+
+    api_url: str = Field(default="http://traefik:8080", validation_alias="SMOKE_URL")
+    grafana_url: str = Field(
+        default="http://grafana:3000",
+        validation_alias="GRAFANA_URL",
+    )
+    deadline_seconds: float = Field(
+        default=150,
+        validation_alias="GRAFANA_SMOKE_DEADLINE_SECONDS",
+    )
