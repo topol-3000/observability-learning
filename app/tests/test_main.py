@@ -21,12 +21,12 @@ from opentelemetry.trace import SpanKind, StatusCode
 
 from observability_demo.logging import JsonFormatter, trace_log_context
 from observability_demo.main import create_app
+from observability_demo.metrics import create_metrics_runtime
 from observability_demo.middleware import REQUEST_ID_HEADER
 from observability_demo.routes import (
     MAX_DELAY_SECONDS,
     MAX_WORK_UNITS,
 )
-from observability_demo.metrics import create_metrics_runtime
 from observability_demo.tracing import create_trace_runtime, service_resource
 
 pytestmark = pytest.mark.anyio

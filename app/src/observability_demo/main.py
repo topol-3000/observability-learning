@@ -26,7 +26,7 @@ configure_application_logging()
 
 
 @asynccontextmanager
-async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
     """Expose readiness only while the application can serve requests."""
     application.state.ready = True
     try:

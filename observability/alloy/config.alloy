@@ -1,0 +1,88 @@
+logging {
+	level  = "info"
+	format = "json"
+}
+
+discovery.docker "observability_demo" {
+	host             = "unix:///var/run/docker.sock"
+	refresh_interval = "5s"
+}
+
+discovery.relabel "observability_demo_logs" {
+	targets = discovery.docker.observability_demo.targets
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+		regex         = "observability-demo"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_observability_logs"]
+		regex         = "true"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		regex         = "(api|traefik)"
+		action        = "keep"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_observability_service"]
+		target_label  = "service"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_observability_environment"]
+		target_label  = "environment"
+	}
+
+	rule {
+		source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+		target_label  = "compose_service"
+	}
+}
+
+loki.source.docker "observability_demo" {
+	host             = "unix:///var/run/docker.sock"
+	targets          = discovery.relabel.observability_demo_logs.output
+	refresh_interval = "5s"
+	forward_to       = [loki.process.observability_demo.receiver]
+}
+
+loki.process "observability_demo" {
+	stage.docker { }
+
+	stage.json {
+		expressions = {
+			request_id          = "request_id",
+			trace_id            = "trace_id",
+			span_id             = "span_id",
+			service_instance_id = "\"service.instance.id\"",
+		}
+		drop_malformed = false
+	}
+
+	stage.structured_metadata {
+		values = {
+			request_id          = "",
+			trace_id            = "",
+			span_id             = "",
+			service_instance_id = "",
+		}
+	}
+
+	stage.label_keep {
+		values = ["service", "environment", "compose_service"]
+	}
+
+	forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

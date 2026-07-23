@@ -19,6 +19,10 @@ services:
     depends_on:
       otel-collector:
         condition: service_healthy
+    labels:
+      observability.logs: "true"
+      observability.service: observability-demo-edge
+      observability.environment: ${DEPLOYMENT_ENVIRONMENT:-local}
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -72,6 +76,9 @@ services:
       - edge
       - telemetry
     labels:
+      observability.logs: "true"
+      observability.service: ${OTEL_SERVICE_NAME:-observability-demo-api}
+      observability.environment: ${DEPLOYMENT_ENVIRONMENT:-local}
       traefik.enable: "true"
       traefik.http.routers.api.entrypoints: web
       traefik.http.routers.api.rule: PathPrefix(`/`)
@@ -193,6 +200,85 @@ services:
           cpus: "0.75"
           memory: 512M
 
+  loki:
+    image: grafana/loki:3.7.0
+    command: ["-config.file=/etc/loki/config.yaml"]
+    user: "10001:10001"
+    volumes:
+      - ./observability/loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/var/loki
+    depends_on:
+      telemetry-storage-init:
+        condition: service_completed_successfully
+    networks:
+      - telemetry
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "/usr/bin/loki", "-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+
+  alloy:
+    image: grafana/alloy:v1.16.1
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - --disable-reporting
+      - /etc/alloy/config.alloy
+    # Root is required here for portable access to the root-owned Docker socket.
+    # Capabilities are still dropped and the root filesystem remains read-only.
+    user: "0:0"
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy
+      # Local-learning exception: read-only still exposes sensitive Docker metadata.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      loki:
+        condition: service_healthy
+      telemetry-storage-init:
+        condition: service_completed_successfully
+    networks:
+      - telemetry
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "alloy", "fmt", "--test", "/etc/alloy/config.alloy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 192M
+
   blackbox-exporter:
     image: quay.io/prometheus/blackbox-exporter:v0.28.0
     command: ["--config.file=/config/blackbox.yml"]
@@ -267,13 +353,20 @@ services:
     command:
       - sh
       - -c
-      - chown 10001:10001 /var/lib/otelcol /var/tempo && chown 65534:65534 /prometheus
+      - >-
+        chown 10001:10001 /var/lib/otelcol /var/tempo /var/loki
+        && chown 65534:65534 /prometheus
+        && chown 0:0 /var/lib/alloy
+        && mkdir -p /var/lib/alloy/data
+        && chown 0:0 /var/lib/alloy/data
     user: "0:0"
     network_mode: none
     volumes:
       - collector-data:/var/lib/otelcol
       - tempo-data:/var/tempo
       - prometheus-data:/prometheus
+      - loki-data:/var/loki
+      - alloy-data:/var/lib/alloy
     read_only: true
     cap_drop:
       - ALL
@@ -386,6 +479,38 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  logs-smoke:
+    image: observability-demo-api-test:${APP_VERSION:-0.1.0}
+    build:
+      context: ./app
+      target: test
+    profiles:
+      - test
+    command: ["python", "tests/smoke_logs.py"]
+    environment:
+      EXPECTED_REPLICAS: "4"
+      SMOKE_URL: http://traefik:8080
+      LOKI_URL: http://loki:3100
+    depends_on:
+      traefik:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      alloy:
+        condition: service_healthy
+    networks:
+      - edge
+      - telemetry
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   edge:
     driver: bridge
@@ -400,3 +525,5 @@ volumes:
   collector-data:
   tempo-data:
   prometheus-data:
+  loki-data:
+  alloy-data:

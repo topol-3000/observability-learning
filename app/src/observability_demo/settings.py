@@ -109,3 +109,15 @@ class MetricsSmokeSettings(EnvironmentSettings):
         default=120,
         validation_alias="METRICS_SMOKE_DEADLINE_SECONDS",
     )
+
+
+class LogsSmokeSettings(EnvironmentSettings):
+    """Settings for the Loki and Alloy ingestion smoke check."""
+
+    api_url: str = Field(default="http://traefik:8080", validation_alias="SMOKE_URL")
+    loki_url: str = Field(default="http://loki:3100", validation_alias="LOKI_URL")
+    expected_replicas: int = Field(default=4, validation_alias="EXPECTED_REPLICAS")
+    deadline_seconds: float = Field(
+        default=90,
+        validation_alias="LOGS_SMOKE_DEADLINE_SECONDS",
+    )

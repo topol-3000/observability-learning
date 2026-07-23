@@ -1,18 +1,21 @@
 # Docker Observability Learning Stack
 
-Steps 1 through 4 provide a containerized FastAPI service behind Traefik with
+Steps 1 through 5 provide a containerized FastAPI service behind Traefik with
 structured JSON logs, end-to-end OpenTelemetry traces, and OpenTelemetry
-metrics stored in Prometheus. Docker Compose runs four API replicas, each with
-one Granian worker. Traefik and the replicas export OTLP/gRPC signals through
-an OpenTelemetry Collector; traces go to Tempo and metrics go to Prometheus's
-internal OTLP receiver. The API and telemetry containers have no host ports;
-Traefik is the only published HTTP entrypoint.
+metrics stored in Prometheus, plus Docker log collection through Alloy into
+Loki. Docker Compose runs four API replicas, each with one Granian worker.
+Traefik and the replicas export OTLP/gRPC signals through an OpenTelemetry
+Collector; traces go to Tempo and metrics go to Prometheus's internal OTLP
+receiver. Alloy collects only explicitly opted-in API and Traefik containers.
+The API and telemetry containers have no host ports; Traefik is the only
+published HTTP entrypoint.
 
 The implementation plans are recorded in
 [`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md),
 [`docs/STEP_2_IMPLEMENTATION_PLAN.md`](docs/STEP_2_IMPLEMENTATION_PLAN.md), and
-[`docs/STEP_3_IMPLEMENTATION_PLAN.md`](docs/STEP_3_IMPLEMENTATION_PLAN.md), and
-[`docs/STEP_4_IMPLEMENTATION_PLAN.md`](docs/STEP_4_IMPLEMENTATION_PLAN.md).
+[`docs/STEP_3_IMPLEMENTATION_PLAN.md`](docs/STEP_3_IMPLEMENTATION_PLAN.md),
+[`docs/STEP_4_IMPLEMENTATION_PLAN.md`](docs/STEP_4_IMPLEMENTATION_PLAN.md), and
+[`docs/STEP_5_IMPLEMENTATION_PLAN.md`](docs/STEP_5_IMPLEMENTATION_PLAN.md).
 
 ## Prerequisites
 
@@ -121,10 +124,10 @@ and trace IDs, raw URLs/query strings, replica IDs, PIDs, and request values are
 not metric labels.
 
 Traefik additionally exports edge and backend observations. Prometheus scrapes
-the Collector, Tempo, Blackbox Exporter, and itself. The Blackbox Exporter
-independently probes `/health/ready` through Traefik, so `probe_success` remains
-useful when the application emits no telemetry. Prometheus intentionally
-promotes only `service.name`, `service.namespace`, and
+the Collector, Tempo, Loki, Alloy, Blackbox Exporter, and itself. The Blackbox
+Exporter independently probes `/health/ready` through Traefik, so
+`probe_success` remains useful when the application emits no telemetry.
+Prometheus intentionally promotes only `service.name`, `service.namespace`, and
 `deployment.environment.name` from OpenTelemetry resources; the per-replica
 identity is not a business metric label.
 
@@ -165,6 +168,52 @@ To demonstrate that a process restart does not invalidate the service total,
 restart one API replica, send more traffic, and re-run the metric smoke helper.
 Counter values from the restarted instance may reset, but the recording rules
 use `rate()` and aggregate across the independently exported replica series.
+
+## Inspect and verify logs in Loki
+
+Alloy discovers Docker containers through the local socket but keeps only this
+Compose project's explicitly opted-in `api` and `traefik` services. Every Loki
+stream has exactly three bounded labels: `service`, `environment`, and
+`compose_service`. Request IDs, trace/span IDs, replica IDs, PIDs, severity,
+routes, status codes, and error text remain structured metadata and JSON
+content rather than indexed labels.
+
+Run the end-to-end acceptance helper:
+
+```bash
+docker compose --profile test run --build --rm logs-smoke
+```
+
+It sends requests with known request and trace IDs, waits for Loki ingestion,
+requires Traefik plus all four application replica identities, rejects any
+stream label outside the allowlist, verifies correlation-field searches, and
+checks that routine readiness traffic is absent.
+
+Loki remains internal until Grafana is provisioned in Step 6. The test image
+includes a small query helper that runs on the telemetry network. For example,
+list recent application completion records:
+
+```bash
+docker compose --profile test run --build --rm --no-deps \
+  --entrypoint python logs-smoke tests/query_logs.py \
+  '{service="observability-demo-api",environment="local"} | json | event = "http_request_completed"'
+```
+
+The smoke helper output includes verified IDs. A direct LogQL correlation
+query has this shape:
+
+```logql
+{service="observability-demo-api",environment="local"}
+  | json
+  | request_id = "<request-id>"
+  | trace_id = "<trace-id>"
+```
+
+Loki uses TSDB schema v13 with local filesystem storage and seven-day
+retention. Retention is time-based, not disk-usage-based, so the Loki volume
+should still be monitored on a constrained workstation. Alloy persists Docker
+reader state in its own named volume so a normal restart does not replay all
+available container history.
 
 ## Verify load distribution
 
@@ -212,20 +261,23 @@ docker compose config --quiet
 
 ## Stop or reset
 
-Normal shutdown preserves Tempo traces, Prometheus metrics, and the Collector's
-persistent queue:
+Normal shutdown preserves Tempo traces, Prometheus metrics, Loki logs, Alloy
+reader state, and the Collector's persistent queue:
 
 ```bash
 docker compose down
 ```
 
 `docker compose down --volumes` is the explicit destructive reset. It removes
-the Tempo trace store, Prometheus TSDB, and Collector queue in addition to the
-containers and networks.
+the Tempo trace store, Prometheus TSDB, Loki log store, Alloy reader state, and
+Collector queue in addition to the containers and networks.
 
 ## Security note
 
-Traefik mounts the Docker socket read-only for local container discovery. This
-still grants access to sensitive Docker API metadata; read-only mounting does
-not make the socket harmless. A production deployment should use a restricted
-Docker API proxy or platform-native service discovery with least privilege.
+Traefik and Alloy mount the Docker socket read-only for local container and log
+discovery. This still grants access to sensitive Docker API metadata;
+read-only mounting does not make the socket harmless. Alloy runs as root
+inside its otherwise capability-dropped, read-only container so it can access
+the root-owned socket portably. A production deployment should use a
+restricted Docker API proxy or platform-native service and log discovery with
+least privilege.
