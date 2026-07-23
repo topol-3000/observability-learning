@@ -1,0 +1,26 @@
+groups:
+  - name: observability_demo_api_red
+    interval: 15s
+    rules:
+      - record: demo:api_http_server_request:rate5m
+        expr: >-
+          sum by (service_name, service_namespace, deployment_environment_name,
+          http_route, http_request_method) (
+            rate(demo_http_server_request_count_total[5m])
+          )
+      - record: demo:api_http_server_error:rate5m
+        expr: >-
+          sum by (service_name, service_namespace, deployment_environment_name,
+          http_route, http_request_method) (
+            rate(demo_http_server_request_count_total{event_outcome="server_error"}[5m])
+          )
+      - record: demo:api_http_server_request_duration_seconds_bucket:rate5m
+        expr: >-
+          sum by (service_name, service_namespace, deployment_environment_name,
+          http_route, http_request_method, le) (
+            rate(demo_http_server_request_duration_seconds_bucket[5m])
+          )
+      - record: demo:api_http_server_active_requests
+        expr: >-
+          sum by (service_name, service_namespace, deployment_environment_name,
+          http_request_method) (demo_http_server_active_requests)

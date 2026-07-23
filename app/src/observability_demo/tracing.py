@@ -1,6 +1,5 @@
 """OpenTelemetry tracing setup and safe trace-correlation helpers."""
 
-import os
 import traceback
 from dataclasses import dataclass
 
@@ -25,6 +24,7 @@ from observability_demo.logging import (
     SERVICE_NAMESPACE,
     SERVICE_VERSION,
 )
+from observability_demo.settings import TelemetrySettings
 
 INSTRUMENTATION_SCOPE = "observability_demo"
 HEALTH_EXCLUDED_URLS = "health/live,health/ready"
@@ -32,13 +32,7 @@ HEALTH_EXCLUDED_URLS = "health/live,health/ready"
 
 def tracing_enabled_from_environment() -> bool:
     """Enable export only when an OTLP endpoint is explicitly configured."""
-    sdk_disabled = os.getenv("OTEL_SDK_DISABLED", "false").strip().lower()
-    if sdk_disabled in {"true", "1", "yes"}:
-        return False
-    return bool(
-        os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-    )
+    return TelemetrySettings().tracing_enabled
 
 
 def service_resource() -> Resource:

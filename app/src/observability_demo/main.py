@@ -19,6 +19,8 @@ from observability_demo.logging import (
     trace_log_context,
     valid_request_id,
 )
+from observability_demo.metrics import MetricsRuntime, create_metrics_runtime
+from observability_demo.settings import ApplicationSettings
 from observability_demo.tracing import (
     TraceRuntime,
     create_trace_runtime,
@@ -27,7 +29,7 @@ from observability_demo.tracing import (
     mark_current_span_failed,
 )
 
-APP_VERSION = os.getenv("APP_VERSION", "0.1.0")
+APP_VERSION = ApplicationSettings().version
 INSTANCE_ID = socket.gethostname()
 MAX_WORK_UNITS = 100
 MAX_DELAY_SECONDS = 2.0
@@ -53,6 +55,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         application.state.ready = False
+        application.state.metrics_runtime.shutdown()
         application.state.trace_runtime.shutdown()
 
 
@@ -86,9 +89,15 @@ def request_outcome(status_code: int) -> str:
     return "success"
 
 
-def create_app(trace_runtime: TraceRuntime | None = None) -> FastAPI:
+def create_app(
+    trace_runtime: TraceRuntime | None = None,
+    metrics_runtime: MetricsRuntime | None = None,
+) -> FastAPI:
     """Build a new application instance for the server and tests."""
     runtime = trace_runtime if trace_runtime is not None else create_trace_runtime()
+    metric_runtime = (
+        metrics_runtime if metrics_runtime is not None else create_metrics_runtime()
+    )
     application = FastAPI(
         title="Observability Demo API",
         version=APP_VERSION,
@@ -96,6 +105,7 @@ def create_app(trace_runtime: TraceRuntime | None = None) -> FastAPI:
     )
     application.state.ready = False
     application.state.trace_runtime = runtime
+    application.state.metrics_runtime = metric_runtime
 
     @application.middleware("http")
     async def structured_request_log(
@@ -109,10 +119,13 @@ def create_app(trace_runtime: TraceRuntime | None = None) -> FastAPI:
             else new_request_id()
         )
         started_at = time.perf_counter()
+        method = request_method(request.method)
         response: Response | None = None
         request_exception: Exception | None = None
 
         with request_log_context(request_id):
+            if request.url.path not in HEALTH_PATHS:
+                metric_runtime.record_http_started(method)
             try:
                 try:
                     response = await call_next(request)
@@ -132,14 +145,22 @@ def create_app(trace_runtime: TraceRuntime | None = None) -> FastAPI:
             finally:
                 if request.url.path not in HEALTH_PATHS:
                     status_code = response.status_code if response is not None else 500
+                    duration_seconds = time.perf_counter() - started_at
+                    metric_runtime.record_http_completed(
+                        duration_seconds,
+                        {
+                            "http.request.method": method,
+                            "http.route": request_route(request),
+                            "http.response.status_code": status_code,
+                            "event.outcome": request_outcome(status_code),
+                        },
+                    )
                     if status_code >= 500:
                         mark_current_span_failed(request_exception)
                     event_fields = {
-                        "duration_ms": round(
-                            (time.perf_counter() - started_at) * 1_000, 3
-                        ),
+                        "duration_ms": round(duration_seconds * 1_000, 3),
                         "event.outcome": request_outcome(status_code),
-                        "http.request.method": request_method(request.method),
+                        "http.request.method": method,
                         "http.response.status_code": status_code,
                         "http.route": request_route(request),
                     }
@@ -187,25 +208,37 @@ def create_app(trace_runtime: TraceRuntime | None = None) -> FastAPI:
     async def work(
         units: Annotated[int, Query(ge=1, le=MAX_WORK_UNITS)] = 10,
     ) -> dict[str, int | str]:
+        started_at = time.perf_counter()
         tracer = application.state.trace_runtime.tracer
-        with tracer.start_as_current_span(
-            "demo.work.validate",
-            attributes={
-                "demo.work.units": units,
-                "demo.work.outcome": "success",
-            },
-        ):
-            validated_units = units
-        with tracer.start_as_current_span(
-            "demo.work.calculate",
-            attributes={"demo.work.outcome": "success"},
-        ):
-            checksum = perform_bounded_work(validated_units)
-        with tracer.start_as_current_span(
-            "demo.work.persist",
-            attributes={"demo.work.outcome": "success"},
-        ):
-            await asyncio.sleep(0)
+        try:
+            with tracer.start_as_current_span(
+                "demo.work.validate",
+                attributes={
+                    "demo.work.units": units,
+                    "demo.work.outcome": "success",
+                },
+            ):
+                validated_units = units
+            with tracer.start_as_current_span(
+                "demo.work.calculate",
+                attributes={"demo.work.outcome": "success"},
+            ):
+                checksum = perform_bounded_work(validated_units)
+            with tracer.start_as_current_span(
+                "demo.work.persist",
+                attributes={"demo.work.outcome": "success"},
+            ):
+                await asyncio.sleep(0)
+        except Exception:
+            metric_runtime.record_work_completed(
+                time.perf_counter() - started_at,
+                "error",
+            )
+            raise
+        metric_runtime.record_work_completed(
+            time.perf_counter() - started_at,
+            "success",
+        )
         return {"status": "completed", "units": units, "checksum": checksum}
 
     @application.get("/slow")

@@ -26,6 +26,21 @@ tracing:
       endpoint: otel-collector:4317
       insecure: true
 
+metrics:
+  otlp:
+    serviceName: observability-demo-edge
+    resourceAttributes:
+      service.namespace: learning
+      service.version: 3.7.8
+      deployment.environment.name: local
+    addEntryPointsLabels: true
+    addRoutersLabels: false
+    addServicesLabels: true
+    pushInterval: 15s
+    grpc:
+      endpoint: otel-collector:4317
+      insecure: true
+
 providers:
   docker:
     endpoint: "unix:///var/run/docker.sock"

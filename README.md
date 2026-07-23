@@ -1,16 +1,18 @@
 # Docker Observability Learning Stack
 
-Steps 1 through 3 provide a containerized FastAPI service behind Traefik with
-structured JSON logs and end-to-end OpenTelemetry traces. Docker Compose runs
-four API replicas, each with one Granian worker. Traefik and the replicas export
-OTLP/gRPC spans through an OpenTelemetry Collector to Tempo. The API and
-telemetry containers have no host ports; Traefik is the only published HTTP
-entrypoint.
+Steps 1 through 4 provide a containerized FastAPI service behind Traefik with
+structured JSON logs, end-to-end OpenTelemetry traces, and OpenTelemetry
+metrics stored in Prometheus. Docker Compose runs four API replicas, each with
+one Granian worker. Traefik and the replicas export OTLP/gRPC signals through
+an OpenTelemetry Collector; traces go to Tempo and metrics go to Prometheus's
+internal OTLP receiver. The API and telemetry containers have no host ports;
+Traefik is the only published HTTP entrypoint.
 
 The implementation plans are recorded in
 [`docs/STEP_1_IMPLEMENTATION_PLAN.md`](docs/STEP_1_IMPLEMENTATION_PLAN.md),
 [`docs/STEP_2_IMPLEMENTATION_PLAN.md`](docs/STEP_2_IMPLEMENTATION_PLAN.md), and
-[`docs/STEP_3_IMPLEMENTATION_PLAN.md`](docs/STEP_3_IMPLEMENTATION_PLAN.md).
+[`docs/STEP_3_IMPLEMENTATION_PLAN.md`](docs/STEP_3_IMPLEMENTATION_PLAN.md), and
+[`docs/STEP_4_IMPLEMENTATION_PLAN.md`](docs/STEP_4_IMPLEMENTATION_PLAN.md).
 
 ## Prerequisites
 
@@ -108,6 +110,62 @@ memory limiting and batching, removes raw URL/query/body and sensitive header
 attributes, and uses a bounded persistent retry queue before exporting to
 Tempo.
 
+## Inspect and verify metrics
+
+Each API replica publishes metrics every 15 seconds through the Collector. The
+application supplies aggregate-friendly RED metrics for eligible HTTP requests:
+request count, duration histogram, and in-flight request count. `/work` also
+supplies bounded count and duration metrics. Their only data-point dimensions
+are method, route template, status/outcome, and the fixed work outcome; request
+and trace IDs, raw URLs/query strings, replica IDs, PIDs, and request values are
+not metric labels.
+
+Traefik additionally exports edge and backend observations. Prometheus scrapes
+the Collector, Tempo, Blackbox Exporter, and itself. The Blackbox Exporter
+independently probes `/health/ready` through Traefik, so `probe_success` remains
+useful when the application emits no telemetry. Prometheus intentionally
+promotes only `service.name`, `service.namespace`, and
+`deployment.environment.name` from OpenTelemetry resources; the per-replica
+identity is not a business metric label.
+
+Run the end-to-end acceptance helper after the stack is healthy:
+
+```bash
+docker compose --profile test run --build --rm metrics-smoke
+```
+
+It sends normal, work, slow, and failing requests through Traefik, then waits
+for Prometheus to contain application RED/custom metrics, Traefik metrics, a
+successful Blackbox probe, and the service RED recording rule. The helper also
+fails if unsafe application labels appear. It can take a little over one
+Prometheus scrape/export interval on a clean stack.
+
+Prometheus remains internal in this step. Query it from a disposable container
+on the telemetry network, for example:
+
+```bash
+docker compose exec prometheus promtool query instant http://localhost:9090 \
+  'sum by (http_route) (rate(demo_http_server_request_count_total{service_name="observability-demo-api"}[5m]))'
+```
+
+The version-controlled recording rules aggregate all replica series into
+service/route/method views. Validate their syntax and behavior with the pinned
+Prometheus image:
+
+```bash
+docker compose run --rm --no-deps --entrypoint promtool prometheus \
+  check config /etc/prometheus/prometheus.yml
+docker compose run --rm --no-deps --entrypoint promtool prometheus \
+  check rules /etc/prometheus/rules/api_red.yaml
+docker compose run --rm --no-deps --entrypoint promtool prometheus \
+  test rules /etc/prometheus/tests/api_red_test.yaml
+```
+
+To demonstrate that a process restart does not invalidate the service total,
+restart one API replica, send more traffic, and re-run the metric smoke helper.
+Counter values from the restarted instance may reset, but the recording rules
+use `rate()` and aggregate across the independently exported replica series.
+
 ## Verify load distribution
 
 The smoke check makes repeated requests through Traefik and fails unless it sees
@@ -154,15 +212,16 @@ docker compose config --quiet
 
 ## Stop or reset
 
-Normal shutdown preserves Tempo traces and the Collector's persistent queue:
+Normal shutdown preserves Tempo traces, Prometheus metrics, and the Collector's
+persistent queue:
 
 ```bash
 docker compose down
 ```
 
 `docker compose down --volumes` is the explicit destructive reset. It removes
-the Tempo trace store and Collector queue in addition to the containers and
-networks.
+the Tempo trace store, Prometheus TSDB, and Collector queue in addition to the
+containers and networks.
 
 ## Security note
 

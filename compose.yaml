@@ -58,6 +58,10 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4317
       OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: grpc
       OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: "5"
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_METRICS_PROTOCOL: grpc
+      OTEL_EXPORTER_OTLP_METRICS_TIMEOUT: "5"
+      OTEL_METRIC_EXPORT_INTERVAL: "15000"
       OTEL_BSP_EXPORT_TIMEOUT: "5000"
       OTEL_BSP_SCHEDULE_DELAY: "500"
       OTEL_PROPAGATORS: tracecontext
@@ -76,6 +80,7 @@ services:
       traefik.http.routers.api-health.rule: Path(`/health/live`) || Path(`/health/ready`)
       traefik.http.routers.api-health.service: api
       traefik.http.routers.api-health.observability.accesslogs: "false"
+      traefik.http.routers.api-health.observability.metrics: "false"
       traefik.http.routers.api-health.observability.tracing: "false"
       traefik.http.services.api.loadbalancer.server.port: "8000"
       traefik.http.services.api.loadbalancer.healthcheck.path: /health/ready
@@ -111,6 +116,8 @@ services:
         condition: service_completed_successfully
       tempo:
         condition: service_healthy
+      prometheus:
+        condition: service_healthy
     networks:
       - telemetry
     read_only: true
@@ -140,6 +147,87 @@ services:
         limits:
           cpus: "0.50"
           memory: 192M
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-otlp-receiver
+    volumes:
+      - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - ./observability/prometheus/tests:/etc/prometheus/tests:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      telemetry-storage-init:
+        condition: service_completed_successfully
+    networks:
+      - telemetry
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "promtool",
+          "check",
+          "config",
+          "/etc/prometheus/prometheus.yml",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512M
+
+  blackbox-exporter:
+    image: quay.io/prometheus/blackbox-exporter:v0.28.0
+    command: ["--config.file=/config/blackbox.yml"]
+    volumes:
+      - ./observability/blackbox/config.yaml:/config/blackbox.yml:ro
+    networks:
+      - edge
+      - telemetry
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "blackbox_exporter",
+          "--config.file=/config/blackbox.yml",
+          "--config.check",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 64M
 
   tempo:
     image: grafana/tempo:3.0.2
@@ -179,12 +267,13 @@ services:
     command:
       - sh
       - -c
-      - chown 10001:10001 /var/lib/otelcol /var/tempo
+      - chown 10001:10001 /var/lib/otelcol /var/tempo && chown 65534:65534 /prometheus
     user: "0:0"
     network_mode: none
     volumes:
       - collector-data:/var/lib/otelcol
       - tempo-data:/var/tempo
+      - prometheus-data:/prometheus
     read_only: true
     cap_drop:
       - ALL
@@ -266,6 +355,37 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  metrics-smoke:
+    image: observability-demo-api-test:${APP_VERSION:-0.1.0}
+    build:
+      context: ./app
+      target: test
+    profiles:
+      - test
+    command: ["python", "tests/smoke_metrics.py"]
+    environment:
+      SMOKE_URL: http://traefik:8080
+      PROMETHEUS_URL: http://prometheus:9090
+    depends_on:
+      traefik:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+      blackbox-exporter:
+        condition: service_healthy
+    networks:
+      - edge
+      - telemetry
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   edge:
     driver: bridge
@@ -279,3 +399,4 @@ networks:
 volumes:
   collector-data:
   tempo-data:
+  prometheus-data:

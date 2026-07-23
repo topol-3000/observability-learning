@@ -1,14 +1,16 @@
 """Verify that Traefik distributes requests across the expected replicas."""
 
 import json
-import os
 import time
 import urllib.error
 import urllib.request
 
-URL = os.getenv("SMOKE_URL", "http://traefik:8080/debug/instance")
-EXPECTED_REPLICAS = int(os.getenv("EXPECTED_REPLICAS", "4"))
-DEADLINE_SECONDS = float(os.getenv("SMOKE_DEADLINE_SECONDS", "30"))
+from observability_demo.settings import DistributionSmokeSettings
+
+settings = DistributionSmokeSettings()
+URL = settings.url
+EXPECTED_REPLICAS = settings.expected_replicas
+DEADLINE_SECONDS = settings.deadline_seconds
 
 
 def fetch_instance() -> str:

@@ -1,0 +1,32 @@
+rule_files:
+  - /etc/prometheus/rules/api_red.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'demo_http_server_request_count_total{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",service_instance_id="one",http_route="/",http_request_method="GET",http_response_status_code="200",event_outcome="success"}'
+        values: '0+60x15'
+      - series: 'demo_http_server_request_count_total{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",service_instance_id="two",http_route="/",http_request_method="GET",http_response_status_code="500",event_outcome="server_error"}'
+        values: '0+12x15'
+      - series: 'demo_http_server_active_requests{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",service_instance_id="one",http_request_method="GET"}'
+        values: '2x16'
+      - series: 'demo_http_server_active_requests{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",service_instance_id="two",http_request_method="GET"}'
+        values: '3x16'
+    promql_expr_test:
+      - expr: 'demo:api_http_server_request:rate5m{service_name="observability-demo-api",http_route="/",http_request_method="GET"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'demo:api_http_server_request:rate5m{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",http_route="/",http_request_method="GET"}'
+            value: 1.2
+      - expr: 'demo:api_http_server_error:rate5m{service_name="observability-demo-api",http_route="/",http_request_method="GET"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'demo:api_http_server_error:rate5m{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",http_route="/",http_request_method="GET"}'
+            value: 0.2
+      - expr: 'demo:api_http_server_active_requests{service_name="observability-demo-api",http_request_method="GET"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'demo:api_http_server_active_requests{service_name="observability-demo-api",service_namespace="learning",deployment_environment_name="local",http_request_method="GET"}'
+            value: 5

@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import re
 import socket
 import sys
@@ -13,11 +12,15 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "observability-demo-api")
-SERVICE_NAMESPACE = os.getenv("OTEL_SERVICE_NAMESPACE", "learning")
-SERVICE_VERSION = os.getenv("APP_VERSION", "0.1.0")
-DEPLOYMENT_ENVIRONMENT = os.getenv("DEPLOYMENT_ENVIRONMENT", "local")
-SERVICE_INSTANCE_ID = os.environ.setdefault("SERVICE_INSTANCE_ID", str(uuid4()))
+from observability_demo.settings import ApplicationSettings, ServiceSettings
+
+application_settings = ApplicationSettings()
+service_settings = ServiceSettings()
+SERVICE_NAME = service_settings.name
+SERVICE_NAMESPACE = service_settings.namespace
+SERVICE_VERSION = application_settings.version
+DEPLOYMENT_ENVIRONMENT = service_settings.deployment_environment
+SERVICE_INSTANCE_ID = service_settings.instance_id
 CONTAINER_ID = socket.gethostname()
 
 _request_id: ContextVar[str | None] = ContextVar("request_id", default=None)

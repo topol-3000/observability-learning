@@ -1,7 +1,6 @@
 """Verify edge/application trace continuity and all replica resource identities."""
 
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -9,10 +8,13 @@ from collections.abc import Iterator
 from typing import Any
 from uuid import uuid4
 
-API_URL = os.getenv("SMOKE_URL", "http://traefik:8080/work?units=2")
-TEMPO_URL = os.getenv("TEMPO_URL", "http://tempo:3200")
-EXPECTED_REPLICAS = int(os.getenv("EXPECTED_REPLICAS", "4"))
-DEADLINE_SECONDS = float(os.getenv("SMOKE_DEADLINE_SECONDS", "90"))
+from observability_demo.settings import TraceSmokeSettings
+
+settings = TraceSmokeSettings()
+API_URL = settings.api_url
+TEMPO_URL = settings.tempo_url
+EXPECTED_REPLICAS = settings.expected_replicas
+DEADLINE_SECONDS = settings.deadline_seconds
 EXPECTED_SERVICES = {"observability-demo-edge", "observability-demo-api"}
 EXPECTED_WORK_SPANS = {
     "demo.work.validate",

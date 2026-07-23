@@ -60,6 +60,19 @@ processors:
     send_batch_max_size: 1024
 
 exporters:
+  otlp_http/prometheus:
+    endpoint: http://prometheus:9090/api/v1/otlp
+    timeout: 5s
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 2048
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 30s
   otlp_grpc/tempo:
     endpoint: tempo:4317
     tls:
@@ -79,11 +92,23 @@ exporters:
 service:
   extensions: [health_check, file_storage]
   pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/identity, attributes/safety, batch]
+      exporters: [otlp_http/prometheus]
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource/identity, attributes/safety, batch]
       exporters: [otlp_grpc/tempo]
   telemetry:
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
     logs:
       encoding: json
       level: info

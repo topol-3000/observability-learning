@@ -13,6 +13,7 @@ from uuid import UUID
 import pytest
 from fastapi import Request
 from httpx2 import ASGITransport, AsyncClient
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
@@ -25,6 +26,7 @@ from observability_demo.main import (
     REQUEST_ID_HEADER,
     create_app,
 )
+from observability_demo.metrics import create_metrics_runtime
 from observability_demo.tracing import create_trace_runtime, service_resource
 
 pytestmark = pytest.mark.anyio
@@ -60,6 +62,22 @@ async def traced_client() -> AsyncIterator[tuple[AsyncClient, InMemorySpanExport
 
 
 @pytest.fixture
+async def metered_client() -> AsyncIterator[tuple[AsyncClient, InMemoryMetricReader]]:
+    reader = InMemoryMetricReader()
+    runtime = create_metrics_runtime(reader=reader, enabled=True)
+    application = create_app(
+        create_trace_runtime(enabled=False),
+        metrics_runtime=runtime,
+    )
+    async with application.router.lifespan_context(application):
+        transport = ASGITransport(app=application)
+        async with AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as test_client:
+            yield test_client, reader
+
+
+@pytest.fixture
 def log_output() -> Iterator[io.StringIO]:
     """Capture only application JSON logs without changing their formatter."""
     application_logger = logging.getLogger("observability_demo")
@@ -85,6 +103,21 @@ def completion_logs(log_output: io.StringIO) -> list[dict[str, object]]:
         for record in parsed_logs(log_output)
         if record["event"] == "http_request_completed"
     ]
+
+
+def metric_points(
+    reader: InMemoryMetricReader,
+    metric_name: str,
+) -> tuple[object, tuple[object, ...]]:
+    """Return one metric and its points from the isolated in-memory reader."""
+    metrics_data = reader.get_metrics_data()
+    assert metrics_data is not None
+    for resource_metrics in metrics_data.resource_metrics:
+        for scope_metrics in resource_metrics.scope_metrics:
+            for metric in scope_metrics.metrics:
+                if metric.name == metric_name:
+                    return resource_metrics, tuple(metric.data.data_points)
+    raise AssertionError(f"metric {metric_name} was not emitted")
 
 
 async def test_root(client: AsyncClient) -> None:
@@ -410,6 +443,113 @@ async def test_error_span_is_failed_without_exception_message(
     assert all(
         "exception.message" not in event.attributes for event in server_span.events
     )
+
+
+async def test_http_metrics_use_route_templates_and_bounded_attributes(
+    metered_client: tuple[AsyncClient, InMemoryMetricReader],
+) -> None:
+    client, reader = metered_client
+
+    assert (await client.get("/")).status_code == 200
+    assert (await client.get("/work", params={"units": 2})).status_code == 200
+    assert (await client.get("/error")).status_code == 500
+
+    resource_metrics, count_points = metric_points(
+        reader,
+        "demo.http.server.request.count",
+    )
+    assert resource_metrics.resource.attributes["service.name"] == (
+        "observability-demo-api"
+    )
+    assert resource_metrics.resource.attributes["service.namespace"] == "learning"
+    assert len(count_points) == 3
+    attributes = [point.attributes for point in count_points]
+    assert {
+        (
+            values["http.route"],
+            values["http.request.method"],
+            values["http.response.status_code"],
+            values["event.outcome"],
+        )
+        for values in attributes
+    } == {
+        ("/", "GET", 200, "success"),
+        ("/work", "GET", 200, "success"),
+        ("/error", "GET", 500, "server_error"),
+    }
+    forbidden_attributes = {
+        "http.url",
+        "http.target",
+        "url.full",
+        "url.path",
+        "url.query",
+        "request_id",
+        "trace_id",
+        "span_id",
+        "service.instance.id",
+        "process.pid",
+    }
+    assert all(
+        not (forbidden_attributes & point.attributes.keys()) for point in count_points
+    )
+
+    _, duration_points = metric_points(reader, "demo.http.server.request.duration")
+    assert len(duration_points) == 3
+    assert all(point.count == 1 and point.sum > 0 for point in duration_points)
+
+
+async def test_health_requests_do_not_emit_http_metrics(
+    metered_client: tuple[AsyncClient, InMemoryMetricReader],
+) -> None:
+    client, reader = metered_client
+
+    assert (await client.get("/health/live")).status_code == 200
+    assert (await client.get("/health/ready")).status_code == 200
+
+    metrics_data = reader.get_metrics_data()
+    if metrics_data is None:
+        return
+    assert all(
+        metric.name != "demo.http.server.request.count"
+        for resource_metrics in metrics_data.resource_metrics
+        for scope_metrics in resource_metrics.scope_metrics
+        for metric in scope_metrics.metrics
+    )
+
+
+async def test_work_metrics_record_count_duration_and_bounded_outcome(
+    metered_client: tuple[AsyncClient, InMemoryMetricReader],
+) -> None:
+    client, reader = metered_client
+
+    assert (await client.get("/work", params={"units": 2})).status_code == 200
+
+    _, count_points = metric_points(reader, "demo.work.count")
+    assert len(count_points) == 1
+    assert count_points[0].attributes == {"demo.work.outcome": "success"}
+    assert count_points[0].value == 1
+    _, duration_points = metric_points(reader, "demo.work.duration")
+    assert len(duration_points) == 1
+    assert duration_points[0].attributes == {"demo.work.outcome": "success"}
+    assert duration_points[0].count == 1
+    assert duration_points[0].sum > 0
+
+
+async def test_active_request_metric_returns_to_zero_after_concurrent_requests(
+    metered_client: tuple[AsyncClient, InMemoryMetricReader],
+) -> None:
+    client, reader = metered_client
+
+    responses = await asyncio.gather(
+        client.get("/slow", params={"delay_seconds": 0.001}),
+        client.get("/slow", params={"delay_seconds": 0.001}),
+    )
+
+    assert all(response.status_code == 200 for response in responses)
+    _, points = metric_points(reader, "demo.http.server.active_requests")
+    assert len(points) == 1
+    assert points[0].attributes == {"http.request.method": "GET"}
+    assert points[0].value == 0
 
 
 def test_trace_resource_matches_structured_log_identity() -> None:
